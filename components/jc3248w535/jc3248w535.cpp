@@ -7,6 +7,7 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_vendor.h"
+#include "freertos/semphr.h"
 
 #include "esp_lcd_axs15231b_interface.h"
 
@@ -18,6 +19,7 @@ static const char *const TAG = "jc3248w535";
 static const int WIDTH = 320;
 static const int HEIGHT = 480;
 static const int STRIPE_HEIGHT = 40;
+static const int TEST_MARKER_RADIUS = 16;
 static const spi_host_device_t SPI_HOST = SPI2_HOST;
 
 static const gpio_num_t PIN_CS = GPIO_NUM_45;
@@ -88,6 +90,54 @@ void JC3248W535::update() {
   this->write_display_data_();
 }
 
+void JC3248W535::update_test_marker(int x, int y, bool active) {
+  const int old_x1 = this->test_marker_x_ - TEST_MARKER_RADIUS;
+  const int old_y1 = this->test_marker_y_ - TEST_MARKER_RADIUS;
+  const int new_x1 = x - TEST_MARKER_RADIUS;
+  const int new_y1 = y - TEST_MARKER_RADIUS;
+  const int rect_size = TEST_MARKER_RADIUS * 2 + 1;
+
+  if (!this->test_marker_visible_ && !active)
+    return;
+
+  int flush_x1 = 0;
+  int flush_y1 = 0;
+  int flush_x2 = 0;
+  int flush_y2 = 0;
+
+  if (this->test_marker_visible_) {
+    flush_x1 = old_x1;
+    flush_y1 = old_y1;
+    flush_x2 = old_x1 + rect_size;
+    flush_y2 = old_y1 + rect_size;
+  }
+
+  if (active) {
+    if (this->test_marker_visible_) {
+      flush_x1 = std::min(flush_x1, new_x1);
+      flush_y1 = std::min(flush_y1, new_y1);
+      flush_x2 = std::max(flush_x2, new_x1 + rect_size);
+      flush_y2 = std::max(flush_y2, new_y1 + rect_size);
+    } else {
+      flush_x1 = new_x1;
+      flush_y1 = new_y1;
+      flush_x2 = new_x1 + rect_size;
+      flush_y2 = new_y1 + rect_size;
+    }
+  }
+
+  this->paint_test_background_rect_(flush_x1, flush_y1, flush_x2 - flush_x1, flush_y2 - flush_y1);
+  if (active)
+    this->paint_test_marker_rect_(x, y);
+  this->write_display_data_();
+
+  this->test_marker_visible_ = active;
+  if (active) {
+    this->test_marker_x_ = x;
+    this->test_marker_y_ = y;
+  }
+}
+
 void JC3248W535::draw_absolute_pixel_internal(int x, int y, Color color) {
   if (x < 0 || y < 0 || x >= WIDTH || y >= HEIGHT)
     return;
@@ -145,12 +195,15 @@ void JC3248W535::init_lcd_() {
   io_config.dc_gpio_num = -1;
   io_config.spi_mode = 3;
   io_config.pclk_hz = 50 * 1000 * 1000;
-  io_config.trans_queue_depth = 10;
-  io_config.on_color_trans_done = nullptr;
-  io_config.user_ctx = nullptr;
+  io_config.trans_queue_depth = 1;
+  io_config.on_color_trans_done = &JC3248W535::color_trans_done_callback_;
+  io_config.user_ctx = this;
   io_config.lcd_cmd_bits = 32;
   io_config.lcd_param_bits = 8;
   io_config.flags.quad_mode = 1;
+
+  if (this->color_trans_done_sem_ == nullptr)
+    this->color_trans_done_sem_ = xSemaphoreCreateBinary();
 
   ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t) SPI_HOST, &io_config, &this->io_handle_));
 
@@ -175,7 +228,160 @@ void JC3248W535::write_display_data_() {
   for (int y = 0; y < HEIGHT; y += STRIPE_HEIGHT) {
     const int stripe_height = (y + STRIPE_HEIGHT <= HEIGHT) ? STRIPE_HEIGHT : (HEIGHT - y);
     const uint8_t *stripe = this->buffer_ + (y * WIDTH * 2);
-    ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(this->panel_, 0, y, WIDTH, y + stripe_height, stripe));
+    this->queue_bitmap_and_wait_(0, y, WIDTH, stripe_height, stripe);
+  }
+}
+
+void JC3248W535::queue_bitmap_and_wait_(int x, int y, int w, int h, const void *data) {
+  if (w <= 0 || h <= 0)
+    return;
+
+  if (this->color_trans_done_sem_ != nullptr) {
+    while (xSemaphoreTake(this->color_trans_done_sem_, 0) == pdTRUE) {
+    }
+  }
+
+  ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(this->panel_, x, y, x + w, y + h, data));
+
+  if (this->color_trans_done_sem_ != nullptr)
+    xSemaphoreTake(this->color_trans_done_sem_, portMAX_DELAY);
+}
+
+void JC3248W535::ensure_transfer_buffer_(size_t required_bytes) {
+  if (required_bytes <= this->transfer_buffer_bytes_ && this->transfer_buffer_ != nullptr)
+    return;
+
+  if (this->transfer_buffer_ != nullptr) {
+    heap_caps_free(this->transfer_buffer_);
+    this->transfer_buffer_ = nullptr;
+    this->transfer_buffer_bytes_ = 0;
+  }
+
+  this->transfer_buffer_ =
+      static_cast<uint8_t *>(heap_caps_malloc(required_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (this->transfer_buffer_ == nullptr) {
+    ESP_LOGE(TAG, "Failed to allocate %u bytes for display transfer buffer", static_cast<unsigned>(required_bytes));
+    return;
+  }
+
+  this->transfer_buffer_bytes_ = required_bytes;
+}
+
+bool JC3248W535::color_trans_done_callback_(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata,
+                                            void *user_ctx) {
+  auto *self = static_cast<JC3248W535 *>(user_ctx);
+  if (self == nullptr || self->color_trans_done_sem_ == nullptr)
+    return false;
+
+  BaseType_t high_task_wakeup = pdFALSE;
+  xSemaphoreGiveFromISR(self->color_trans_done_sem_, &high_task_wakeup);
+  return high_task_wakeup == pdTRUE;
+}
+
+void JC3248W535::flush_logical_rect_(int x, int y, int w, int h) {
+  const int logical_width = this->get_width();
+  const int logical_height = this->get_height();
+
+  if (w <= 0 || h <= 0)
+    return;
+
+  int x1 = std::max(0, x);
+  int y1 = std::max(0, y);
+  int x2 = std::min(logical_width, x + w);
+  int y2 = std::min(logical_height, y + h);
+
+  if (x1 >= x2 || y1 >= y2)
+    return;
+
+  int native_x = 0;
+  int native_y = 0;
+  int native_w = 0;
+  int native_h = 0;
+
+  switch (this->get_rotation()) {
+    case display::DISPLAY_ROTATION_0_DEGREES:
+      native_x = x1;
+      native_y = y1;
+      native_w = x2 - x1;
+      native_h = y2 - y1;
+      break;
+    case display::DISPLAY_ROTATION_90_DEGREES:
+      native_x = WIDTH - y2;
+      native_y = x1;
+      native_w = y2 - y1;
+      native_h = x2 - x1;
+      break;
+    case display::DISPLAY_ROTATION_180_DEGREES:
+      native_x = WIDTH - x2;
+      native_y = HEIGHT - y2;
+      native_w = x2 - x1;
+      native_h = y2 - y1;
+      break;
+    case display::DISPLAY_ROTATION_270_DEGREES:
+      native_x = y1;
+      native_y = HEIGHT - x2;
+      native_w = y2 - y1;
+      native_h = x2 - x1;
+      break;
+  }
+
+  const size_t row_bytes = static_cast<size_t>(native_w) * 2;
+  const size_t required_bytes = row_bytes * static_cast<size_t>(native_h);
+  this->ensure_transfer_buffer_(required_bytes);
+  if (this->transfer_buffer_ == nullptr)
+    return;
+
+  for (int row = 0; row < native_h; row++) {
+    const uint8_t *src = this->buffer_ + (((native_y + row) * WIDTH) + native_x) * 2;
+    memcpy(this->transfer_buffer_ + (row * row_bytes), src, row_bytes);
+  }
+
+  this->queue_bitmap_and_wait_(native_x, native_y, native_w, native_h, this->transfer_buffer_);
+}
+
+void JC3248W535::paint_test_background_rect_(int x, int y, int w, int h) {
+  const int logical_width = this->get_width();
+  const int logical_height = this->get_height();
+  const int x_start = std::max(0, x);
+  const int y_start = std::max(0, y);
+  const int x_end = std::min(logical_width, x + w);
+  const int y_end = std::min(logical_height, y + h);
+
+  for (int py = y_start; py < y_end; py++) {
+    for (int px = x_start; px < x_end; px++) {
+      Color color;
+      if (px == 0 || px == 239 || px == 240 || px == 479 || py == 0 || py == 159 || py == 160 || py == 319) {
+        color = Color::WHITE;
+      } else if (px < 240 && py < 160) {
+        color = Color(120, 30, 30);
+      } else if (px >= 240 && py < 160) {
+        color = Color(30, 120, 30);
+      } else if (px < 240 && py >= 160) {
+        color = Color(30, 30, 120);
+      } else {
+        color = Color(120, 90, 20);
+      }
+      this->draw_pixel_at(px, py, color);
+    }
+  }
+}
+
+void JC3248W535::paint_test_marker_rect_(int x, int y) {
+  const int outer_sq = TEST_MARKER_RADIUS * TEST_MARKER_RADIUS;
+  const int inner_sq = 10 * 10;
+
+  for (int py = y - TEST_MARKER_RADIUS; py <= y + TEST_MARKER_RADIUS; py++) {
+    for (int px = x - TEST_MARKER_RADIUS; px <= x + TEST_MARKER_RADIUS; px++) {
+      int dx = px - x;
+      int dy = py - y;
+      int dist_sq = dx * dx + dy * dy;
+
+      if (dist_sq <= inner_sq) {
+        this->draw_pixel_at(px, py, Color::WHITE);
+      } else if (dist_sq >= outer_sq - TEST_MARKER_RADIUS && dist_sq <= outer_sq + TEST_MARKER_RADIUS) {
+        this->draw_pixel_at(px, py, Color::BLACK);
+      }
+    }
   }
 }
 
