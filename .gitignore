@@ -6,6 +6,7 @@ Firmware/
 Homeassistant/
 vendor_qspi_test/
 driver_validation.yaml
+driver_validation_touch.yaml
 *.zip
 *.bin
 *.elf

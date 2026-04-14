@@ -2,7 +2,7 @@
 
 ESPHome external display component for the `JC3248W535` ESP32-S3 3.5" QSPI touch display.
 
-This repository packages the working vendor QSPI LCD driver as an ESPHome `display` platform so it can be pulled in with `external_components`.
+This repository packages the working vendor QSPI LCD driver and AXS15231 touch controller as ESPHome external components.
 
 ## Status
 
@@ -10,7 +10,7 @@ This repository packages the working vendor QSPI LCD driver as an ESPHome `displ
 - Resolution is fixed at `320x480`
 - Backlight is handled internally on `GPIO1`
 - QSPI LCD pins are fixed for this board
-- Touch is not included in this component yet
+- Touch support is included through the `axs15231` touchscreen platform
 
 ## Quick Start
 
@@ -20,7 +20,7 @@ external_components:
       type: git
       url: https://github.com/oddhap/jc3248w535-esphome
       ref: main
-    components: [jc3248w535]
+    components: [jc3248w535, axs15231]
 ```
 
 ## Example Integration
@@ -53,7 +53,7 @@ external_components:
       type: git
       url: https://github.com/oddhap/jc3248w535-esphome
       ref: main
-    components: [jc3248w535]
+    components: [jc3248w535, axs15231]
 
 display:
   - platform: jc3248w535
@@ -62,6 +62,19 @@ display:
     lambda: |-
       it.fill(Color::BLACK);
       it.printf(20, 20, id(my_font), Color(255, 255, 255), "Hei fra JC3248W535");
+
+i2c:
+  sda: 4
+  scl: 8
+
+touchscreen:
+  - platform: axs15231
+    id: main_touch
+    display: main_display
+    interrupt_pin: GPIO3
+    transform:
+      swap_xy: true
+      mirror_y: true
 
 font:
   - file: "gfonts://Roboto"
@@ -73,4 +86,4 @@ font:
 
 - This component is intended for the `JC3248W535` board and uses its fixed hardware pinout.
 - The component uses the vendor LCD initialization sequence that worked in local hardware testing.
-- For now this repository only contains the display driver. Touch support can be added later as a separate component.
+- For the JC3248W535 board, the touch bus is typically `sda: 4`, `scl: 8`, address `0x3B`, and interrupt on `GPIO3`.
