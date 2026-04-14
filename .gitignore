@@ -1,0 +1,12 @@
+.DS_Store
+.venv/
+.esphome/
+build/
+Firmware/
+Homeassistant/
+vendor_qspi_test/
+driver_validation.yaml
+*.zip
+*.bin
+*.elf
+*.json
