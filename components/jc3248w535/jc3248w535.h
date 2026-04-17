@@ -17,7 +17,10 @@ class JC3248W535 : public display::DisplayBuffer {
   void dump_config() override;
   float get_setup_priority() const override;
   void update() override;
+  void draw_pixel_at(int x, int y, Color color) override;
   void update_test_marker(int x, int y, bool active);
+  void set_backlight_brightness(float brightness);
+  float get_backlight_brightness() const { return this->backlight_brightness_; }
 
   display::DisplayType get_display_type() override { return display::DisplayType::DISPLAY_TYPE_COLOR; }
 
@@ -46,6 +49,8 @@ class JC3248W535 : public display::DisplayBuffer {
   bool test_marker_visible_{false};
   int test_marker_x_{0};
   int test_marker_y_{0};
+  uint32_t pixel_ops_since_feed_{0};
+  float backlight_brightness_{1.0f};
 };
 
 }  // namespace jc3248w535

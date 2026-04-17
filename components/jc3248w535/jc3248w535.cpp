@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "esphome/core/log.h"
+#include "esphome/core/application.h"
 
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -18,7 +19,6 @@ static const char *const TAG = "jc3248w535";
 
 static const int WIDTH = 320;
 static const int HEIGHT = 480;
-static const int STRIPE_HEIGHT = 40;
 static const int TEST_MARKER_RADIUS = 16;
 static const spi_host_device_t SPI_HOST = SPI2_HOST;
 
@@ -86,8 +86,38 @@ void JC3248W535::dump_config() {
 float JC3248W535::get_setup_priority() const { return setup_priority::PROCESSOR; }
 
 void JC3248W535::update() {
+  this->pixel_ops_since_feed_ = 0;
   this->do_update_();
   this->write_display_data_();
+}
+
+void JC3248W535::draw_pixel_at(int x, int y, Color color) {
+  if (!this->get_clipping().inside(x, y))
+    return;
+
+  switch (this->get_rotation()) {
+    case display::DISPLAY_ROTATION_0_DEGREES:
+      break;
+    case display::DISPLAY_ROTATION_90_DEGREES: {
+      std::swap(x, y);
+      x = this->get_width_internal() - x - 1;
+      break;
+    }
+    case display::DISPLAY_ROTATION_180_DEGREES:
+      x = this->get_width_internal() - x - 1;
+      y = this->get_height_internal() - y - 1;
+      break;
+    case display::DISPLAY_ROTATION_270_DEGREES: {
+      std::swap(x, y);
+      y = this->get_height_internal() - y - 1;
+      break;
+    }
+  }
+
+  this->draw_absolute_pixel_internal(x, y, color);
+  if (((++this->pixel_ops_since_feed_) & 0x7FFU) == 0) {
+    App.feed_wdt();
+  }
 }
 
 void JC3248W535::update_test_marker(int x, int y, bool active) {
@@ -150,6 +180,18 @@ void JC3248W535::draw_absolute_pixel_internal(int x, int y, Color color) {
 
 size_t JC3248W535::get_buffer_length_() const { return size_t(WIDTH) * size_t(HEIGHT) * 2; }
 
+void JC3248W535::set_backlight_brightness(float brightness) {
+  if (brightness < 0.0f)
+    brightness = 0.0f;
+  if (brightness > 1.0f)
+    brightness = 1.0f;
+
+  this->backlight_brightness_ = brightness;
+  const uint32_t duty = static_cast<uint32_t>(brightness * 1023.0f + 0.5f);
+  ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty));
+  ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1));
+}
+
 void JC3248W535::init_backlight_() {
   const ledc_timer_config_t timer = {
       .speed_mode = LEDC_LOW_SPEED_MODE,
@@ -172,8 +214,7 @@ void JC3248W535::init_backlight_() {
   };
   ESP_ERROR_CHECK(ledc_timer_config(&timer));
   ESP_ERROR_CHECK(ledc_channel_config(&channel));
-  ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, 1023));
-  ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1));
+  this->set_backlight_brightness(this->backlight_brightness_);
 }
 
 void JC3248W535::init_lcd_() {
@@ -225,11 +266,7 @@ void JC3248W535::init_lcd_() {
 }
 
 void JC3248W535::write_display_data_() {
-  for (int y = 0; y < HEIGHT; y += STRIPE_HEIGHT) {
-    const int stripe_height = (y + STRIPE_HEIGHT <= HEIGHT) ? STRIPE_HEIGHT : (HEIGHT - y);
-    const uint8_t *stripe = this->buffer_ + (y * WIDTH * 2);
-    this->queue_bitmap_and_wait_(0, y, WIDTH, stripe_height, stripe);
-  }
+  this->queue_bitmap_and_wait_(0, 0, WIDTH, HEIGHT, this->buffer_);
 }
 
 void JC3248W535::queue_bitmap_and_wait_(int x, int y, int w, int h, const void *data) {

@@ -3,7 +3,8 @@
 .esphome/
 build/
 Firmware/
-Homeassistant/
+Homeassistant/*
+!Homeassistant/ha-dashboard.yaml
 vendor_qspi_test/
 driver_validation.yaml
 driver_validation_touch.yaml
