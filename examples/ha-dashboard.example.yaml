@@ -1,0 +1,688 @@
+substitutions:
+  device_name: ha-dashboard
+  friendly_name: HA Dashboard
+  power_entity: sensor.house_power
+  climate_entity: climate.main_room
+  outdoor_temp_entity: sensor.outdoor_temperature
+  switch_1_name: Reading Light
+  switch_1_entity: switch.reading_light
+  switch_2_name: Sofa Light
+  switch_2_entity: switch.sofa_light
+  switch_3_name: Dining Light
+  switch_3_entity: switch.dining_light
+  switch_4_name: Heater
+  switch_4_entity: switch.hall_heater
+  switch_5_name: Hot Water
+  switch_5_entity: switch.hot_water
+  script_1_name: Radio
+  script_1_entity: script.play_radio
+  script_2_name: All Off
+  script_2_entity: script.turn_everything_off
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -10
+    then:
+      - script.execute: apply_backlight
+      - component.update: main_display
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: y
+      CONFIG_SPIRAM_RODATA: y
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  level: WARN
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: "CHANGE_ME_WIFI_SSID"
+  password: "CHANGE_ME_WIFI_PASSWORD"
+  power_save_mode: none
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: "change-me-1234"
+
+captive_portal:
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/oddhap/jc3248w535-esphome
+      ref: main
+    components: [jc3248w535, axs15231]
+
+i2c:
+  sda: 4
+  scl: 8
+  id: touchscreen_bus
+  frequency: 400kHz
+  scan: true
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+interval:
+  - interval: 50ms
+    then:
+      - if:
+          condition:
+            lambda: return id(display_dirty);
+          then:
+            - lambda: |-
+                id(display_dirty) = false;
+                id(last_display_update_ms) = millis();
+            - component.update: main_display
+  - interval: 60s
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          if (id(ui_page) == 0 && (now - id(last_touch_ms) >= 1500)) {
+            id(display_dirty) = true;
+          }
+
+globals:
+  - id: ui_page
+    type: int
+    restore_value: no
+    initial_value: "0"
+  - id: theme_mode
+    type: int
+    restore_value: yes
+    initial_value: "0"
+  - id: pending_target_temp
+    type: float
+    restore_value: no
+    initial_value: "21.0"
+  - id: display_dirty
+    type: bool
+    restore_value: no
+    initial_value: "true"
+  - id: last_display_update_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: last_touch_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: suspend_redraw_until_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: backlight_percent
+    type: int
+    restore_value: yes
+    initial_value: "85"
+  - id: backlight_auto
+    type: bool
+    restore_value: yes
+    initial_value: "true"
+
+font:
+  - file: "gfonts://Manrope"
+    id: font_small
+    size: 14
+    bpp: 1
+    glyphs:
+      - " ABCDEFGHIJKLMNOPQRSTUVWXYZÆØÅabcdefghijklmnopqrstuvwxyzæøå0123456789:.,%-+/()"
+  - file: "gfonts://Manrope"
+    id: font_body
+    size: 18
+    bpp: 1
+    glyphs:
+      - " ABCDEFGHIJKLMNOPQRSTUVWXYZÆØÅabcdefghijklmnopqrstuvwxyzæøå0123456789:.,%-+/()"
+  - file: "gfonts://Manrope"
+    id: font_title
+    size: 28
+    bpp: 1
+    glyphs:
+      - " ABCDEFGHIJKLMNOPQRSTUVWXYZÆØÅabcdefghijklmnopqrstuvwxyzæøå0123456789:.,%-+/()"
+  - file: "gfonts://Manrope"
+    id: font_clock
+    size: 64
+    bpp: 1
+    glyphs:
+      - " 0123456789:"
+  - file: "gfonts://Manrope"
+    id: font_metric
+    size: 48
+    bpp: 1
+    glyphs:
+      - " 0123456789.C-"
+
+sensor:
+  - platform: homeassistant
+    id: house_power
+    entity_id: ${power_entity}
+    on_value:
+      - lambda: |-
+          const uint32_t now = millis();
+          if (id(ui_page) == 0 && !id(display_dirty) && now >= id(suspend_redraw_until_ms) &&
+              (now - id(last_display_update_ms) >= 8000)) {
+            id(display_dirty) = true;
+          }
+
+  - platform: homeassistant
+    id: climate_current_temp
+    entity_id: ${climate_entity}
+    attribute: current_temperature
+    on_value:
+      - lambda: |-
+          const uint32_t now = millis();
+          if ((id(ui_page) == 0 || id(ui_page) == 1) && now >= id(suspend_redraw_until_ms)) {
+            id(display_dirty) = true;
+          }
+
+  - platform: homeassistant
+    id: climate_target_temp
+    entity_id: ${climate_entity}
+    attribute: temperature
+    on_value:
+      - lambda: |-
+          const uint32_t now = millis();
+          if ((id(ui_page) == 0 || id(ui_page) == 1) && now >= id(suspend_redraw_until_ms)) {
+            id(display_dirty) = true;
+          }
+
+  - platform: homeassistant
+    id: outside_temp
+    entity_id: ${outdoor_temp_entity}
+    on_value:
+      - lambda: |-
+          const uint32_t now = millis();
+          if (id(ui_page) == 0 && now >= id(suspend_redraw_until_ms)) {
+            id(display_dirty) = true;
+          }
+
+text_sensor:
+  - platform: homeassistant
+    id: climate_mode
+    entity_id: ${climate_entity}
+    on_value:
+      - lambda: |-
+          const uint32_t now = millis();
+          if ((id(ui_page) == 0 || id(ui_page) == 1) && now >= id(suspend_redraw_until_ms)) {
+            id(display_dirty) = true;
+          }
+
+  - platform: homeassistant
+    id: sun_state
+    entity_id: sun.sun
+    on_value:
+      - script.execute: apply_backlight
+      - lambda: |-
+          const uint32_t now = millis();
+          if (now >= id(suspend_redraw_until_ms)) {
+            id(display_dirty) = true;
+          }
+
+switch:
+  - platform: homeassistant
+    id: sw_1
+    entity_id: ${switch_1_entity}
+    on_turn_on:
+      - lambda: id(display_dirty) = true;
+    on_turn_off:
+      - lambda: id(display_dirty) = true;
+
+  - platform: homeassistant
+    id: sw_2
+    entity_id: ${switch_2_entity}
+    on_turn_on:
+      - lambda: id(display_dirty) = true;
+    on_turn_off:
+      - lambda: id(display_dirty) = true;
+
+  - platform: homeassistant
+    id: sw_3
+    entity_id: ${switch_3_entity}
+    on_turn_on:
+      - lambda: id(display_dirty) = true;
+    on_turn_off:
+      - lambda: id(display_dirty) = true;
+
+  - platform: homeassistant
+    id: sw_4
+    entity_id: ${switch_4_entity}
+    on_turn_on:
+      - lambda: id(display_dirty) = true;
+    on_turn_off:
+      - lambda: id(display_dirty) = true;
+
+  - platform: homeassistant
+    id: sw_5
+    entity_id: ${switch_5_entity}
+    on_turn_on:
+      - lambda: id(display_dirty) = true;
+    on_turn_off:
+      - lambda: id(display_dirty) = true;
+
+script:
+  - id: apply_backlight
+    mode: restart
+    then:
+      - lambda: |-
+          int brightness = id(backlight_percent);
+          if (id(backlight_auto)) {
+            brightness = (id(sun_state).state == "below_horizon") ? 20 : 80;
+          }
+          id(main_display).set_backlight_brightness(brightness / 100.0f);
+          id(display_dirty) = true;
+
+  - id: climate_temp_up
+    mode: restart
+    then:
+      - lambda: |-
+          float base = 21.0f;
+          if (!isnan(id(climate_target_temp).state)) {
+            base = id(climate_target_temp).state;
+          } else if (!isnan(id(climate_current_temp).state)) {
+            base = id(climate_current_temp).state;
+          }
+          id(pending_target_temp) = std::min(30.0f, base + 0.5f);
+          id(climate_target_temp).publish_state(id(pending_target_temp));
+      - homeassistant.action:
+          action: climate.set_temperature
+          data:
+            entity_id: ${climate_entity}
+            temperature: !lambda |-
+              char buffer[8];
+              snprintf(buffer, sizeof(buffer), "%.1f", id(pending_target_temp));
+              return std::string(buffer);
+      - lambda: id(display_dirty) = true;
+
+  - id: climate_temp_down
+    mode: restart
+    then:
+      - lambda: |-
+          float base = 21.0f;
+          if (!isnan(id(climate_target_temp).state)) {
+            base = id(climate_target_temp).state;
+          } else if (!isnan(id(climate_current_temp).state)) {
+            base = id(climate_current_temp).state;
+          }
+          id(pending_target_temp) = std::max(5.0f, base - 0.5f);
+          id(climate_target_temp).publish_state(id(pending_target_temp));
+      - homeassistant.action:
+          action: climate.set_temperature
+          data:
+            entity_id: ${climate_entity}
+            temperature: !lambda |-
+              char buffer[8];
+              snprintf(buffer, sizeof(buffer), "%.1f", id(pending_target_temp));
+              return std::string(buffer);
+      - lambda: id(display_dirty) = true;
+
+  - id: climate_mode_heat
+    then:
+      - homeassistant.action:
+          action: climate.set_hvac_mode
+          data:
+            entity_id: ${climate_entity}
+            hvac_mode: heat
+      - lambda: id(display_dirty) = true;
+
+  - id: climate_mode_auto
+    then:
+      - homeassistant.action:
+          action: climate.set_hvac_mode
+          data:
+            entity_id: ${climate_entity}
+            hvac_mode: auto
+      - lambda: id(display_dirty) = true;
+
+  - id: climate_mode_off
+    then:
+      - homeassistant.action:
+          action: climate.set_hvac_mode
+          data:
+            entity_id: ${climate_entity}
+            hvac_mode: "off"
+      - lambda: id(display_dirty) = true;
+
+  - id: run_script_1
+    then:
+      - homeassistant.action:
+          action: script.turn_on
+          data:
+            entity_id: ${script_1_entity}
+
+  - id: run_script_2
+    then:
+      - homeassistant.action:
+          action: script.turn_on
+          data:
+            entity_id: ${script_2_entity}
+
+  - id: backlight_down
+    then:
+      - lambda: |-
+          id(backlight_auto) = false;
+          id(backlight_percent) = std::max(10, id(backlight_percent) - 10);
+      - script.execute: apply_backlight
+
+  - id: backlight_up
+    then:
+      - lambda: |-
+          id(backlight_auto) = false;
+          id(backlight_percent) = std::min(100, id(backlight_percent) + 10);
+      - script.execute: apply_backlight
+
+  - id: backlight_auto_toggle
+    then:
+      - lambda: id(backlight_auto) = !id(backlight_auto);
+      - script.execute: apply_backlight
+
+display:
+  - platform: jc3248w535
+    id: main_display
+    rotation: 90°
+    update_interval: never
+    lambda: |-
+      const bool dark = id(theme_mode) == 2 || (id(theme_mode) == 0 && id(sun_state).state == "below_horizon");
+      const Color bg = dark ? Color(16, 18, 24) : Color(242, 245, 249);
+      const Color panel = dark ? Color(28, 32, 40) : Color(255, 255, 255);
+      const Color panel_alt = dark ? Color(36, 42, 52) : Color(248, 250, 253);
+      const Color border = dark ? Color(68, 76, 88) : Color(212, 220, 230);
+      const Color text = dark ? Color(245, 247, 251) : Color(22, 26, 33);
+      const Color muted = dark ? Color(156, 166, 180) : Color(105, 115, 126);
+      const Color accent = dark ? Color(114, 170, 255) : Color(74, 129, 245);
+      const Color accent_soft = dark ? Color(38, 68, 112) : Color(225, 236, 255);
+
+      auto draw_panel = [&](int x, int y, int w, int h, Color fill, Color stroke) {
+        it.filled_rectangle(x, y, w, h, fill);
+        it.rectangle(x, y, w, h, stroke);
+      };
+
+      auto draw_tab = [&](int x, int y, int w, int h, const char *label, bool active) {
+        draw_panel(x, y, w, h, active ? accent_soft : panel, active ? accent : border);
+        it.printf(x + w / 2, y + h / 2, id(font_body), active ? accent : muted, TextAlign::CENTER, "%s", label);
+      };
+
+      auto draw_tile = [&](int x, int y, int w, int h, const char *title, const char *value, bool active) {
+        draw_panel(x, y, w, h, active ? accent_soft : panel, active ? accent : border);
+        it.printf(x + 12, y + 14, id(font_small), active ? accent : muted, TextAlign::TOP_LEFT, "%s", title);
+        it.printf(x + 12, y + 44, id(font_body), text, TextAlign::TOP_LEFT, "%s", value);
+      };
+
+      auto draw_button = [&](int x, int y, int w, int h, const char *label, bool active) {
+        draw_panel(x, y, w, h, active ? accent_soft : panel_alt, active ? accent : border);
+        it.printf(x + w / 2, y + h / 2, id(font_body), active ? accent : text, TextAlign::CENTER, "%s", label);
+      };
+
+      auto now = id(ha_time).now();
+      std::string time_label = now.is_valid() ? now.strftime("%H:%M") : "--:--";
+      std::string date_label = now.is_valid() ? now.strftime("%d.%m.%Y") : "No time";
+
+      char power_buf[24];
+      snprintf(power_buf, sizeof(power_buf), isnan(id(house_power).state) ? "-- W" : "%.0f W", id(house_power).state);
+
+      char current_temp_buf[16];
+      snprintf(current_temp_buf, sizeof(current_temp_buf), isnan(id(climate_current_temp).state) ? "--.- C" : "%.1f C",
+               id(climate_current_temp).state);
+
+      char outside_temp_buf[16];
+      snprintf(outside_temp_buf, sizeof(outside_temp_buf), isnan(id(outside_temp).state) ? "--.- C" : "%.1f C",
+               id(outside_temp).state);
+
+      char target_temp_buf[16];
+      snprintf(target_temp_buf, sizeof(target_temp_buf), isnan(id(climate_target_temp).state) ? "--.-" : "%.1f",
+               id(climate_target_temp).state);
+
+      int active_backlight = id(backlight_auto) ? ((id(sun_state).state == "below_horizon") ? 20 : 80) : id(backlight_percent);
+      char backlight_buf[16];
+      snprintf(backlight_buf, sizeof(backlight_buf), "%d%%", active_backlight);
+
+      it.fill(bg);
+
+      draw_tab(10, 10, 110, 42, "Overview", id(ui_page) == 0);
+      draw_tab(126, 10, 110, 42, "Climate", id(ui_page) == 1);
+      draw_tab(242, 10, 110, 42, "Controls", id(ui_page) == 2);
+      draw_tab(358, 10, 110, 42, "Settings", id(ui_page) == 3);
+
+      if (id(ui_page) == 0) {
+        draw_panel(16, 72, 286, 160, panel, border);
+        draw_panel(312, 72, 152, 160, panel, border);
+        draw_tile(16, 248, 216, 56, "Indoor Temp", current_temp_buf, false);
+        draw_tile(248, 248, 216, 56, "Outdoor Temp", outside_temp_buf, false);
+
+        it.printf(159, 150, id(font_clock), text, TextAlign::CENTER, "%s", time_label.c_str());
+        it.printf(159, 212, id(font_body), muted, TextAlign::CENTER, "%s", date_label.c_str());
+        it.printf(388, 152, id(font_title), accent, TextAlign::CENTER, "%s", power_buf);
+      }
+
+      if (id(ui_page) == 1) {
+        draw_panel(16, 72, 288, 232, panel, border);
+        draw_panel(320, 72, 144, 232, panel_alt, border);
+
+        it.printf(34, 96, id(font_small), muted, TextAlign::TOP_LEFT, "Current");
+        it.printf(34, 122, id(font_body), text, TextAlign::TOP_LEFT, "%s", current_temp_buf);
+        it.printf(34, 168, id(font_small), muted, TextAlign::TOP_LEFT, "Target");
+        it.printf(152, 220, id(font_metric), text, TextAlign::CENTER, "%s", target_temp_buf);
+        it.printf(240, 216, id(font_title), muted, TextAlign::CENTER, "C");
+
+        draw_button(34, 244, 92, 48, "-", false);
+        draw_button(194, 244, 92, 48, "+", false);
+        it.printf(160, 302, id(font_small), muted, TextAlign::BOTTOM_CENTER, "Adjust 0.5 C");
+
+        it.printf(336, 96, id(font_small), muted, TextAlign::TOP_LEFT, "Mode");
+        draw_button(336, 124, 112, 48, "Heat", id(climate_mode).state == "heat");
+        draw_button(336, 184, 112, 48, "Auto", id(climate_mode).state == "auto");
+        draw_button(336, 244, 112, 48, "Off", id(climate_mode).state == "off");
+      }
+
+      if (id(ui_page) == 2) {
+        draw_tile(16, 76, 142, 64, "${switch_1_name}", id(sw_1).state ? "On" : "Off", id(sw_1).state);
+        draw_tile(169, 76, 142, 64, "${switch_2_name}", id(sw_2).state ? "On" : "Off", id(sw_2).state);
+        draw_tile(322, 76, 142, 64, "${switch_3_name}", id(sw_3).state ? "On" : "Off", id(sw_3).state);
+
+        draw_tile(16, 152, 142, 64, "${switch_4_name}", id(sw_4).state ? "On" : "Off", id(sw_4).state);
+        draw_tile(169, 152, 142, 64, "${switch_5_name}", id(sw_5).state ? "On" : "Off", id(sw_5).state);
+        draw_tile(322, 152, 142, 64, "${script_1_name}", "Run", false);
+        draw_tile(16, 228, 142, 64, "${script_2_name}", "Run", false);
+      }
+
+      if (id(ui_page) == 3) {
+        draw_panel(16, 76, 448, 72, panel, border);
+        draw_panel(16, 156, 448, 72, panel_alt, border);
+        draw_panel(16, 236, 448, 72, panel, border);
+
+        it.printf(30, 92, id(font_small), muted, TextAlign::TOP_LEFT, "Theme");
+        draw_button(30, 106, 126, 30, "Auto", id(theme_mode) == 0);
+        draw_button(176, 106, 126, 30, "Light", id(theme_mode) == 1);
+        draw_button(322, 106, 126, 30, "Dark", id(theme_mode) == 2);
+
+        it.printf(30, 172, id(font_small), muted, TextAlign::TOP_LEFT, "Backlight");
+        draw_button(30, 186, 90, 30, "Auto", id(backlight_auto));
+        draw_button(140, 186, 60, 30, "-", false);
+        draw_button(264, 186, 60, 30, "+", false);
+        it.printf(394, 202, id(font_body), text, TextAlign::CENTER, "%s", backlight_buf);
+
+        it.printf(30, 252, id(font_small), muted, TextAlign::TOP_LEFT, "Status");
+        it.printf(30, 278, id(font_small), text, TextAlign::TOP_LEFT, "Day: 80%%  Night: 20%%");
+        it.printf(250, 278, id(font_small), text, TextAlign::TOP_LEFT, "Calibration: 20-456 / 18-286");
+      }
+
+touchscreen:
+  - platform: axs15231
+    id: main_touch
+    display: main_display
+    i2c_id: touchscreen_bus
+    interrupt_pin: GPIO3
+    touch_timeout: 120ms
+    calibration:
+      x_min: 20
+      x_max: 456
+      y_min: 18
+      y_max: 286
+    transform:
+      swap_xy: true
+      mirror_y: true
+    on_touch:
+      - lambda: |-
+          const int x = touch.x;
+          const int y = touch.y;
+          const uint32_t now = millis();
+          id(suspend_redraw_until_ms) = now + 5000;
+          if (now - id(last_touch_ms) < 80) {
+            return;
+          }
+          id(last_touch_ms) = now;
+
+          auto hit = [&](int rx, int ry, int rw, int rh) -> bool {
+            return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+          };
+
+          if (hit(0, 0, 120, 64)) {
+            id(ui_page) = 0;
+            id(display_dirty) = true;
+            return;
+          }
+          if (hit(120, 0, 120, 64)) {
+            id(ui_page) = 1;
+            id(display_dirty) = true;
+            return;
+          }
+          if (hit(240, 0, 120, 64)) {
+            id(ui_page) = 2;
+            id(display_dirty) = true;
+            return;
+          }
+          if (hit(360, 0, 120, 64)) {
+            id(ui_page) = 3;
+            id(display_dirty) = true;
+            return;
+          }
+
+          if (id(ui_page) == 1) {
+            if (hit(34, 244, 92, 48)) {
+              id(climate_temp_down).execute();
+              return;
+            }
+            if (hit(194, 244, 92, 48)) {
+              id(climate_temp_up).execute();
+              return;
+            }
+            if (hit(336, 124, 112, 48)) {
+              id(climate_mode_heat).execute();
+              return;
+            }
+            if (hit(336, 184, 112, 48)) {
+              id(climate_mode_auto).execute();
+              return;
+            }
+            if (hit(336, 244, 112, 48)) {
+              id(climate_mode_off).execute();
+              return;
+            }
+          }
+
+          if (id(ui_page) == 2) {
+            if (hit(16, 76, 142, 64)) {
+              bool new_state = !id(sw_1).state;
+              id(sw_1).publish_state(new_state);
+              if (new_state) {
+                id(sw_1).turn_on();
+              } else {
+                id(sw_1).turn_off();
+              }
+              return;
+            }
+            if (hit(169, 76, 142, 64)) {
+              bool new_state = !id(sw_2).state;
+              id(sw_2).publish_state(new_state);
+              if (new_state) {
+                id(sw_2).turn_on();
+              } else {
+                id(sw_2).turn_off();
+              }
+              return;
+            }
+            if (hit(322, 76, 142, 64)) {
+              bool new_state = !id(sw_3).state;
+              id(sw_3).publish_state(new_state);
+              if (new_state) {
+                id(sw_3).turn_on();
+              } else {
+                id(sw_3).turn_off();
+              }
+              return;
+            }
+            if (hit(16, 152, 142, 64)) {
+              bool new_state = !id(sw_4).state;
+              id(sw_4).publish_state(new_state);
+              if (new_state) {
+                id(sw_4).turn_on();
+              } else {
+                id(sw_4).turn_off();
+              }
+              return;
+            }
+            if (hit(169, 152, 142, 64)) {
+              bool new_state = !id(sw_5).state;
+              id(sw_5).publish_state(new_state);
+              if (new_state) {
+                id(sw_5).turn_on();
+              } else {
+                id(sw_5).turn_off();
+              }
+              return;
+            }
+            if (hit(322, 152, 142, 64)) {
+              id(run_script_1).execute();
+              return;
+            }
+            if (hit(16, 228, 142, 64)) {
+              id(run_script_2).execute();
+              return;
+            }
+          }
+
+          if (id(ui_page) == 3) {
+            if (hit(30, 106, 126, 30)) {
+              id(theme_mode) = 0;
+              id(display_dirty) = true;
+              return;
+            }
+            if (hit(176, 106, 126, 30)) {
+              id(theme_mode) = 1;
+              id(display_dirty) = true;
+              return;
+            }
+            if (hit(322, 106, 126, 30)) {
+              id(theme_mode) = 2;
+              id(display_dirty) = true;
+              return;
+            }
+            if (hit(30, 186, 90, 30)) {
+              id(backlight_auto_toggle).execute();
+              return;
+            }
+            if (hit(140, 186, 60, 30)) {
+              id(backlight_down).execute();
+              return;
+            }
+            if (hit(264, 186, 60, 30)) {
+              id(backlight_up).execute();
+              return;
+            }
+          }

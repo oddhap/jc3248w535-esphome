@@ -23,6 +23,21 @@ external_components:
     components: [jc3248w535, axs15231]
 ```
 
+## Published Dashboard Example
+
+A sanitized Home Assistant dashboard example is included in this repository:
+
+- [examples/ha-dashboard.example.yaml](/Users/oddi/Documents/JC3248W535/examples/ha-dashboard.example.yaml)
+
+This file is safe to publish:
+
+- no personal entity IDs
+- no API encryption key
+- no Wi-Fi credentials
+- generic substitutions for labels and Home Assistant entities
+
+Before using it, replace the `substitutions:` values at the top with your own entity IDs and labels.
+
 ## Example Integration
 
 ```yaml
@@ -57,11 +72,11 @@ external_components:
 
 display:
   - platform: jc3248w535
-    id: main_display
+      id: main_display
     update_interval: 1s
     lambda: |-
       it.fill(Color::BLACK);
-      it.printf(20, 20, id(my_font), Color(255, 255, 255), "Hei fra JC3248W535");
+      it.printf(20, 20, id(my_font), Color(255, 255, 255), "Hello from JC3248W535");
 
 i2c:
   sda: 4
@@ -81,6 +96,22 @@ font:
     id: my_font
     size: 24
 ```
+
+## Dashboard Notes
+
+The published dashboard example includes:
+
+- four pages: `Overview`, `Climate`, `Controls`, `Settings`
+- live power and temperature display
+- climate target adjustment and mode switching
+- five generic switch tiles and two script buttons
+- manual backlight control plus automatic `80%` day / `20%` night brightness
+
+You should review these parts before flashing:
+
+- `substitutions:` for Home Assistant entities and labels
+- `wifi:` and `ota:` settings
+- touch calibration and transform values if your panel differs
 
 ## Notes
 
