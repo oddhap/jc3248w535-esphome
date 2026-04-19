@@ -17,6 +17,19 @@ constexpr static const uint8_t AXS_READ_TOUCHPAD[11] = {0xB5, 0xAB, 0xA5, 0x5A, 
     return;                         \
   }
 
+template<typename T>
+auto read_touchpad_(T *device, uint8_t *data, size_t len, int)
+    -> decltype(device->write_read(AXS_READ_TOUCHPAD, sizeof(AXS_READ_TOUCHPAD), data, len)) {
+  return device->write_read(AXS_READ_TOUCHPAD, sizeof(AXS_READ_TOUCHPAD), data, len);
+}
+
+template<typename T> i2c::ErrorCode read_touchpad_(T *device, uint8_t *data, size_t len, long) {
+  auto err = device->write(AXS_READ_TOUCHPAD, sizeof(AXS_READ_TOUCHPAD), false);
+  if (err != i2c::ERROR_OK)
+    return err;
+  return device->read(data, len);
+}
+
 void AXS15231Touchscreen::setup() {
   ESP_LOGCONFIG(TAG, "Setting up AXS15231 Touchscreen...");
   if (this->reset_pin_ != nullptr) {
@@ -41,12 +54,9 @@ void AXS15231Touchscreen::setup() {
 }
 
 void AXS15231Touchscreen::update_touches() {
-  i2c::ErrorCode err;
   uint8_t data[8]{};
 
-  err = this->write(AXS_READ_TOUCHPAD, sizeof(AXS_READ_TOUCHPAD), false);
-  ERROR_CHECK(err);
-  err = this->read(data, sizeof(data));
+  const auto err = read_touchpad_(this, data, sizeof(data), 0);
   ERROR_CHECK(err);
   this->status_clear_warning();
 
